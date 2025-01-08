@@ -2,152 +2,97 @@ import cv2
 import numpy as np
 import math
 
-def distance(p1, p2):
-    return np.linalg.norm(np.array(p1) - np.array(p2))
-
-# source: https://stackoverflow.com/questions/2827393/angles-between-two-n-dimensional-vectors-in-python
-def angles(p1, p2, p3, p4):
-    #vector 1
-    v1 = np.array([p2[0] - p1[0], p2[1] - p1[1]])
-    #vector 2
-    v2 = np.array([p4[0] - p3[0], p4[1] - p3[1]])
-    #dot product
-    dotp = np.dot(v1, v2)
-    #cross product
-    crossp = np.cross(v1, v2)
-    
-    angle = np.arctan2(np.abs(crossp), dotp)
-
-    # converting back to degrees
-    angle = np.degrees(angle)
-    return angle
-
 def process_frame(frame):
-    roi = frame[100:600, 250:1100]
+    roi = frame[100:550, 350:1000]
 
-    # enhancing frame
-    # grayscale
     gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
-    # gaussian blur
     blur = cv2.GaussianBlur(gray, (5, 5), 0)
-    # canny edge
     edges = cv2.Canny(blur, 50, 150, apertureSize=3)
 
-    # expanding white areas
-    dilation = cv2.dilate(edges, np.array([5, 5]), iterations=20)
-    # getting rid of small holes (cleaner line)
+    dilation = cv2.dilate(edges, np.array([5, 5]), iterations=20) 
     closing = cv2.morphologyEx(dilation, cv2.MORPH_CLOSE, np.array([9, 9]))
-    # shrinking white areas back
-    erosion = cv2.erode(closing, np.array([5, 5]), iterations=10)
-    
-    # making copy of roi
+    erosion = cv2.erode(closing, np.array([5, 5]), iterations=10)  
     croi = roi.copy()
-
-    # hough line detection
     lines = cv2.HoughLinesP(erosion, rho=1, theta=np.pi / 180, threshold=200, minLineLength=200, maxLineGap=500)
 
-    # list 1, dissimilar lines to base
-    l1 = []
+    line1lst = []
+    line2lst = []
 
-    # list 2, similar lines to base
-    l2 = []
-
-    # making sure they exist
-    if lines is not None:
-        # setting the first detected line as the base
+    if lines is not None:  
         x1, y1, x2, y2 = lines[0][0]
-        # start pt
-        base_start = (x1, y1)
+        slope = (y2 - y1) / (x2 - x1) if x2 != x1 else 999 
+        tanbase = math.atan(slope)
+        baseangle = tanbase * 180 / math.pi
+        line1lst.append([(x1, y1), (x2, y2)])
 
-        # endpt
-        base_end = (x2, y2)
-
-        # setting the first line as l1
-        l1.append([(x1, y1), (x2, y2)])
-
-        # checking other detected lines
         for line in lines[1:]:
             x1, y1, x2, y2 = line[0]
-            l_start = (x1, y1)
-            l_end = (x2, y2)
+            slope = (y2 - y1) / (x2 - x1) if x2 != x1 else 999 
+            tan = math.atan(slope)
+            angle = tan * 180 / math.pi
+            length = np.sqrt((x2 - x1)**2 + (y2 - y1)**2)
+            if length<500:
+                if abs(int(baseangle - angle)) > 10:
+                    line1lst.append([(x1, y1), (x2, y2)])
+                else:
+                    line2lst.append([(x1, y1), (x2, y2)])
 
-            # finding angle diff between 1st line n detected line (sorting)
-            angle = angles(base_start, base_end, l_start, l_end)
+        try:
+            # Draw the lines
+            cv2.line(croi, line1lst[0][0], line1lst[0][1], (0, 255, 0), 8)
+            cv2.line(croi, line1lst[1][0], line1lst[1][1], (0, 255, 0), 8)
 
-            # filtering through length
-            length = np.linalg.norm(np.array([x2 - x1, y2 - y1]))
-            if length < 500:
-                # big diff
-                if angle > 10:
-                    l1.append([(x1, y1), (x2, y2)])
-                # small diff
-                else: 
-                    l2.append([(x1, y1), (x2, y2)])
+            # Reference point: Let's choose the center of the image as the reference point
+            reference_point = (croi.shape[1] // 2, croi.shape[0] // 2)
 
-        # Initialize endpoints with default values
-        b_endpt_1 = t_endpt_1 = (0, 0)
-        b_endpt_2 = t_endpt_2 = (0, 0)
+            # Function to calculate Euclidean distance using np.linalg.norm
+            def distance(p1, p2):
+                return np.linalg.norm(np.array(p1) - np.array(p2))
+            # Calculate bottom and top endpoints for line1
+            x1, y1, x2, y2 = line1lst[0][0][0], line1lst[0][0][1], line1lst[0][1][0], line1lst[0][1][1]
+            b_endpt_1 = (x1, y1) if distance((x1, y1), reference_point) > distance((x2, y2), reference_point) else (x2, y2)
+            t_endpt_1 = (x1, y1) if distance((x1, y1), reference_point) < distance((x2, y2), reference_point) else (x2, y2)
 
-        if len(l1) > 1:
-            # drawing the 2 lines
-            cv2.line(croi, l1[0][0], l1[0][1], (0, 255, 0), 8)
-            cv2.line(croi, l1[1][0], l1[1][1], (0, 255, 0), 8)
-
-            # setting center of the roi as reference pt
-            r_point = (croi.shape[1] // 2, croi.shape[0] // 2)
-
-            # finding top and bottom endpts for base line (line1)
-            x1, y1, x2, y2 = l1[0][0][0], l1[0][0][1], l1[0][1][0], l1[0][1][1]
-            b_endpt_1 = (x1, y1) if distance((x1, y1), r_point) > distance((x2, y2), r_point) else (x2, y2)
-            t_endpt_1 = (x1, y1) if distance((x1, y1), r_point) < distance((x2, y2), r_point) else (x2, y2)
-
-            # finding top and bottom endpts for line2 by comparing distances
-            x1, y1, x2, y2 = l1[1][0][0], l1[1][0][1], l1[1][1][0], l1[1][1][1]
-            # finding the pt closest to the endpt
+            x1, y1, x2, y2 = line1lst[1][0][0], line1lst[1][0][1], line1lst[1][1][0], line1lst[1][1][1]
+            # Compare distances to find the endpoint closest to the first line's endpoints
             if distance((x1, y1), b_endpt_1) < distance((x2, y2), b_endpt_1):
                 b_endpt_2, t_endpt_2 = (x1, y1), (x2, y2)
             else:
                 b_endpt_2, t_endpt_2 = (x2, y2), (x1, y1)
 
-            # drawing the endpts
-            # blue for bottom
-            cv2.circle(croi, b_endpt_1, 10, (255, 0, 0), -1)  
-            cv2.circle(croi, b_endpt_2, 10, (255, 0, 0), -1)
+            # Draw the bottom and top endpoints
+            cv2.circle(croi, b_endpt_1, 10, (255, 0, 0), -1)  # Blue dot at bottom endpoint of line1
+            cv2.circle(croi, b_endpt_2, 10, (255, 0, 0), -1)  # Blue dot at bottom endpoint of line2
+            cv2.circle(croi, t_endpt_1, 10, (0, 255, 255), -1)  # Yellow dot at top endpoint of line1
+            cv2.circle(croi, t_endpt_2, 10, (0, 255, 255), -1)  # Yellow dot at top endpoint of line2
 
-            # yellow for top
-            cv2.circle(croi, t_endpt_1, 10, (0, 255, 255), -1) 
-            cv2.circle(croi, t_endpt_2, 10, (0, 255, 255), -1)
 
-            # calculating midpts
-            midpt1 = ((l1[0][0][0] + l1[0][1][0]) // 2, (l1[0][0][1] + l1[0][1][1]) // 2)
-            midpt2 = ((l1[1][0][0] + l1[1][1][0]) // 2, (l1[1][0][1] + l1[1][1][1]) // 2)
+            # Calculate and draw the midpoints
+            midpoint1 = ((line1lst[0][0][0] + line1lst[0][1][0]) // 2, (line1lst[0][0][1] + line1lst[0][1][1]) // 2)
+            midpoint2 = ((line1lst[1][0][0] + line1lst[1][1][0]) // 2, (line1lst[1][0][1] + line1lst[1][1][1]) // 2)
 
-            # drawing midpts (red!)
-            cv2.circle(croi, midpt1, 10, (0, 0, 255), -1) 
-            cv2.circle(croi, midpt2, 10, (0, 0, 255), -1)
-
-            # "horizontally" connecting the pts to form a row of centerpts
-            c1 = ((midpt1[0] + midpt2[0]) // 2, (midpt1[1] + midpt2[1]) // 2)
+            # Draw a dot at the center of line1 and line2 (midpoints)
+            cv2.circle(croi, midpoint1, 10, (0, 0, 255), -1)  # Red dot at midpoint of line1
+            cv2.circle(croi, midpoint2, 10, (0, 0, 255), -1)  # Red dot at midpoint of line2
+            
+            c1 = ((midpoint1[0] + midpoint2[0]) // 2, (midpoint1[1] + midpoint2[1]) // 2)
             c2 = ((b_endpt_1[0] + b_endpt_2[0]) // 2, (b_endpt_1[1] + b_endpt_2[1]) // 2)
-            c3 = ((t_endpt_1[0] + t_endpt_2[0]) // 2, (t_endpt_1[1] + t_endpt_2[1]) // 2)
-
-            # drawing them out
-            cv2.circle(croi, c1, 10, (42, 42, 165), -1)
-            cv2.circle(croi, c2, 10, (42, 42, 165), -1)
+            c3 = ((t_endpt_1[0] + t_endpt_2[0]) // 2, (t_endpt_1[1] + t_endpt_2[1]) // 2)     
+            cv2.circle(croi, c1, 10, (42, 42, 165), -1)  
+            cv2.circle(croi, c2, 10, (42, 42, 165), -1) 
             cv2.circle(croi, c3, 10, (42, 42, 165), -1)
 
-            # making them into an array (connecting for centerline)
-            points = np.array([c1, c2, c3], np.int32) 
-            # reshaping for polylines 
-            points = points.reshape((-1, 1, 2)) 
-            # drawing as polyline 
-            cv2.polylines(croi, [points], isClosed=False, color=(0, 255, 255), thickness=2)
+            points = np.array([c1, c2, c3], np.int32)  # Create an array of points to form a polyline
+            points = points.reshape((-1, 1, 2))  # Reshape for polylines
+            cv2.polylines(croi, [points], isClosed=False, color=(0, 255, 255), thickness=2)  # Draw the line
 
-    # putting back roi
-    frame[100:600, 250:1100] = croi
+        except Exception as e:
+            print(f"Error: {e}")
+
+    # Update the processed ROI in the frame
+    frame[100:550, 350:1000] = croi
     return frame
 
-# video capture
 cap = cv2.VideoCapture(0)
 
 if not cap.isOpened():
@@ -158,12 +103,16 @@ while True:
     ret, frame = cap.read()
     if not ret:
         break
+
     processed_frame = process_frame(frame)
-    # drawing out roi
-    cv2.rectangle(processed_frame, (250, 100), (1100, 600), (0, 255, 0), 2)
-    # displaying overlay
-    cv2.imshow("Detection", processed_frame)
-    # exit w "q"
+
+    # Drawing ROI
+    cv2.rectangle(processed_frame, (350, 100), (1000, 550), (0, 255, 0), 2)
+
+    # Showing processed frame
+    cv2.imshow("detection", processed_frame)
+
+    # Exit by pressing "q"
     if cv2.waitKey(1) & 0xFF == ord('q'):
         break
 
