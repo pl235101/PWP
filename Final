@@ -1,7 +1,7 @@
 import cv2
 import numpy as np
 import math
-
+# source: https://stackoverflow.com/questions/1401712/how-can-the-euclidean-distance-be-calculated-with-numpy
 def distance(p1, p2):
     return np.linalg.norm(np.array(p1) - np.array(p2))
 
