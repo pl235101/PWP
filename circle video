@@ -1,0 +1,80 @@
+import cv2
+import numpy as np
+
+def circle_detect(frame):
+#loading image
+    (h, w) = frame.shape[:2]
+    new_width = 800
+    aspect_ratio = h / w
+    new_height = int(new_width * aspect_ratio)
+    frame = cv2.resize(frame, (new_width, new_height))
+    copy = frame.copy()
+
+    #image enhancement
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    blur = cv2.medianBlur(gray, 5)
+
+
+    #finding thresh and contos
+    thresh = cv2.adaptiveThreshold(blur, 255, cv2.ADAPTIVE_THRESH_MEAN_C, cv2.THRESH_BINARY_INV, 11, 2)
+    contours, hierarchy = cv2.findContours(thresh, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_SIMPLE)
+
+    #creating the mask
+    mask = np.zeros(frame.shape[:2], dtype="uint8")
+    for contour in contours:
+   #filtering contours
+        if cv2.contourArea(contour) > 500:
+       #drawing the contours
+            cv2.drawContours(mask, [contour], -1, 255, -1)
+
+    #creating 3x3 kernel
+    kernel = np.ones((3, 3), np.uint8)
+    #morph closing
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=2)
+    #masking original img
+    masked_img = cv2.bitwise_and(frame, frame, mask=mask)
+    #creating bg mask
+    background = np.zeros_like(frame)
+    masked_background = cv2.bitwise_and(background, background, mask=cv2.bitwise_not(mask))
+    #combining img n bg mask
+    final_result = cv2.add(masked_img, masked_background)
+    #convert to grayscale
+    gray= cv2.cvtColor(final_result, cv2.COLOR_BGR2GRAY)
+
+    #circle detection
+    circles = cv2.HoughCircles(gray, cv2.HOUGH_GRADIENT, 1.2, 200, None, 300)
+    if circles is not None:
+        #convert x y coords into ints
+        circles = np.round(circles[0, :]).astype("int")
+        #looping over coords n radius
+        for (x, y, r) in circles:
+            #drawing circle
+            cv2.circle(copy, (x, y), r, (200, 50, 500), 4)
+            #drawing center
+            cv2.rectangle(copy, (x - 5, y - 5), (x + 5, y + 5), (0, 128, 255), -1)
+    return copy
+
+cap = cv2.VideoCapture('photos/IMG_7922.MOV')
+# Check if camera opened successfully
+if (cap.isOpened()== False):
+    print("Error opening video file")
+
+# Read until video is completed
+while(cap.isOpened()):
+    
+# Capture frame-by-frame
+    ret, frame = cap.read()
+    if ret == True:
+    # Display the resulting frame
+        frame = circle_detect(frame)
+        cv2.imshow('Frame', frame)
+        
+    # Press Q on keyboard to exit
+        if cv2.waitKey(25) & 0xFF == ord('q'):
+            break
+
+# Break the loop
+    else:
+        break
+cap.release()
+cv2.destroyAllWindows()
