@@ -1,0 +1,79 @@
+import cv2
+import numpy as np
+import matplotlib.pyplot as plt
+import numpy as np
+
+def interpolate(a1, a2, poly_deg=3, n_points=100, plot=True):
+    min_a1_x, max_a1_x = min(a1[:, 0]), max(a1[:, 0])
+    new_a1_x = np.linspace(min_a1_x, max_a1_x, n_points)
+    a1_coefs = np.polyfit(a1[:, 0], a1[:, 1], poly_deg)
+    new_a1_y = np.polyval(a1_coefs, new_a1_x)
+
+    min_a2_x, max_a2_x = min(a2[:, 0]), max(a2[:, 0])
+    new_a2_x = np.linspace(min_a2_x, max_a2_x, n_points)
+    a2_coefs = np.polyfit(a2[:, 0], a2[:, 1], poly_deg)
+    new_a2_y = np.polyval(a2_coefs, new_a2_x)
+
+    midx = [np.mean([new_a1_x[i], new_a2_x[i]]) for i in range(n_points)]
+    midy = [np.mean([new_a1_y[i], new_a2_y[i]]) for i in range(n_points)]
+
+    if plot:
+        plt.plot(a1[:, 0], a1[:, 1], c='black')
+        plt.plot(a2[:, 0], a2[:, 1], c='black')
+        plt.plot(midx, midy, '--', c='black')
+        plt.show()
+
+    return np.array([[x, y] for x, y in zip(midx, midy)])
+
+
+def process_frame(frame):
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    blur = cv2.GaussianBlur(gray, (5, 5), 0)
+    edges = cv2.Canny(blur, 50, 150, apertureSize=3)
+    # expanding white areas
+    dilation = cv2.dilate(edges, np.array([5, 5]), iterations=20)
+    # getting rid of small holes (cleaner line)
+    closing = cv2.morphologyEx(dilation, cv2.MORPH_CLOSE, np.array([9, 9]))
+    # shrinking white areas back
+    erosion = cv2.erode(closing, np.array([5, 5]), iterations=10)
+
+    copy = frame.copy()
+    # lines = cv2.HoughLinesP(erosion, cv2.HOUGH_PROBABILISTIC, np.pi / 180, 90, minLineLength=50, maxLineGap=10)
+    # for x in range(0, len(lines)):
+    #     for x1, y1, x2, y2 in lines[x]:
+    #         # cv2.line(inputImage,(x1,y1),(x2,y2),(0,128,0),2, cv2.LINE_AA)
+    #         pts = np.array([[x1, y1], [x2, y2]], np.int32)
+    #         cv2.polylines(copy, [pts], True, (0, 255, 0))
+
+    contours, hierarchy = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    cv2.drawContours(image, contours, -1, (0, 255, 0), 3)
+    # Access coordinates of the first contour
+    for point in contours[0]:
+        x, y = point[0][0], point[0][1]
+        cv2.circle(copy, (x, y), 2, (0, 0, 255), -1)
+        print(f"Coordinate: ({x}, {y})")
+
+
+    return copy
+
+
+# video capture
+cap = cv2.VideoCapture(0)
+
+if not cap.isOpened():
+    print("uh oh error")
+    exit()
+
+while True:
+    ret, frame = cap.read()
+    if not ret:
+        break
+    processed_frame = process_frame(frame)
+    # displaying overlay
+    cv2.imshow("Detection", processed_frame)
+    # exit w "q"
+    if cv2.waitKey(1) & 0xFF == ord('q'):
+        break
+
+cap.release()
+cv2.destroyAllWindows()
