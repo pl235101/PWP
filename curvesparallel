@@ -1,0 +1,120 @@
+#importing libraries
+import cv2
+import numpy as np
+
+#fuction that processes video frame and overlays curve detection and centerline detection
+#takes frame as input
+#outputs a frame with lines drawn on it
+def process_frame(frame):
+
+    #cropping the frame to fit the ROI
+    roi = frame[100:600, 250:1100]
+
+    #kernel for morphology
+    kernel = np.ones((41, 41), np.uint8)
+
+    #applying grayscale, gaussian blur, and canny edge detection to enhance the frame
+    gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+    blur = cv2.GaussianBlur(gray, (21, 21), 0)
+    th3 = cv2.Canny(blur, 30, 80, 3)
+    
+    #applying morphology close to clean up the image
+    closing = cv2.morphologyEx(th3, cv2.MORPH_CLOSE, kernel, iterations=1)
+
+    #detecting any contours
+    contours, _ = cv2.findContours(closing, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+    #making a list to store detected contours
+    detected_contours = []
+
+    for contour in contours:
+        #finding the perimeter of the contour
+        p=cv2.arcLength(contour, True)
+        #filtering contours to ignore irrelevant ones
+        if p >500:
+            approx = cv2.approxPolyDP(contour, 6, True)
+            #adding contours to the list
+            detected_contours.append(approx)
+    #creating a new list for valid contours
+    valid = []
+    #list for midpoints
+    mid = []
+
+    if len(detected_contours) >= 2:
+        #sorting the contour list based on least to greatest area and taking 2 largest contours)
+        valid = sorted(detected_contours, key=cv2.contourArea, reverse=True)[:2]
+
+    if len(valid) == 2:
+        #setting line 1 as the largest contour
+        lin1 = valid[0]
+        #setting line 2 as the second largest
+        lin2 = valid[1]
+
+        #cropping the contours so that it only takes some of the points, leaving a line that better fits the curve
+        lin1 = lin1[:int(len(lin1) / 1.8)]
+        lin2 = lin2[:int(len(lin2) / 1.7)]
+
+        #turning the line into a numpy array
+        lin1 = np.array(lin1)
+        lin2 = np.array(lin2)
+
+        if lin1 is not None and lin2 is not None:
+            #finding the minimum length between the 2 arrays
+            min_len = min(len(lin1), len(lin2))
+
+            #cropping each line to fit the minimum length
+            lin1 = lin1[:min_len]
+            lin2 = lin2[:min_len]
+
+            #iterating through list
+            for i in range(min_len):
+                #extracting coordinates
+                x1, y1 = lin1[i, 0]
+                x2, y2 = lin2[i, 0]
+
+            #finding the average of each coordinate
+                mid_x = (x1 + x2) // 2
+                mid_y = (y1 + y2) // 2
+                #adding coordinates to list
+                mid.append([mid_x, mid_y])
+
+            #turning list into a numpy array
+            mid =np.array(mid)
+
+            if len(mid) >= 1:
+                #drawing all the lines
+                cv2.polylines(roi, [lin1], False, (173, 216, 230), 5, lineType=cv2.LINE_AA)
+                cv2.polylines(roi, [lin2], False, (173, 216, 230), 5, lineType=cv2.LINE_AA)
+                cv2.polylines(roi, [mid], False, (0, 0, 255), 3, lineType=cv2.LINE_AA)
+
+    #putting roi back into the frame
+    frame[100:600, 250:1100] = roi
+
+    return frame
+
+cap = cv2.VideoCapture(0)
+
+if not cap.isOpened():
+    print("uh oh error")
+    exit()
+
+while True:
+    ret, frame = cap.read()
+    if not ret:
+        break
+
+    if cv2.waitKey(1) & 0xFF == ord('q'):
+        break
+    
+    #processing the frame
+    processed_frame= process_frame(frame)
+
+    #drawing roi
+    cv2.rectangle(processed_frame, (250, 100), (1100, 600), (0, 255, 0), 2)
+
+    #showing processed frame
+    cv2.imshow("detection", processed_frame)
+
+
+cap.release()
+cv2.destroyAllWindows()
