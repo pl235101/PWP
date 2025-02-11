@@ -27,134 +27,91 @@ def angles(p1, p2, p3, p4):
 
 
 def process_frame(frame):
-    roi = frame[800:400, 0:1980]
-    # enhancing frame
-    # grayscale
+    roi = frame[400:800, 0:1980]
+
+#kernel for morphology
+    kernel = np.ones((41, 41), np.uint8)
+
+    #applying grayscale, gaussian blur, and canny edge detection to enhance the frame
     gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
-    # gaussian blur
     blur = cv2.GaussianBlur(gray, (5, 5), 0)
-    # canny edge
-    edges = cv2.Canny(blur, 50, 150, apertureSize=3)
+    ret, th3 = cv2.threshold(blur, 220, 255, 0)
+    # th3 = cv2.Canny(blur, 10, 80, 3)
+    thinned = cv2.ximgproc.thinning(th3)
+    
+    #applying morphology close to clean up the image
+    closing = cv2.morphologyEx(thinned, cv2.MORPH_CLOSE, kernel, iterations=1)
 
-    # expanding white areas
-    dilation = cv2.dilate(edges, np.array([5, 5]), iterations=20)
-    # getting rid of small holes (cleaner line)
-    closing = cv2.morphologyEx(dilation, cv2.MORPH_CLOSE, np.array([9, 9]))
-    # shrinking white areas back
-    erosion = cv2.erode(closing, np.array([5, 5]), iterations=10)
+    #detecting any contours
+    contours, _ = cv2.findContours(closing, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
 
-    # making copy of roi
-    croi = roi.copy()
+    #making a list to store detected contours
+    detected_contours = []
 
-    # hough line detection
-    lines = cv2.HoughLinesP(erosion, rho=1, theta=np.pi / 180, threshold=200, minLineLength=200, maxLineGap=500)
+    for contour in contours:
+        #finding the perimeter of the contour
+        p=cv2.arcLength(contour, True)
+        #filtering contours to ignore irrelevant ones
+        if p >500:
+            approx = cv2.approxPolyDP(contour, 6, True)
+            #adding contours to the list
+            detected_contours.append(approx)
+    #creating a new list for valid contours
+    valid = []
+    #list for midpoints
+    mid = []
 
-    # list 1, dissimilar lines to base
-    l1 = []
+    if len(detected_contours) >= 2:
+        #sorting the contour list based on least to greatest area and taking 2 largest contours)
+        valid = sorted(detected_contours, key=cv2.contourArea, reverse=True)[:2]
 
-    # list 2, similar lines to base
-    l2 = []
+    if len(valid) == 2:
+        #setting line 1 as the largest contour
+        lin1 = valid[0]
+        #setting line 2 as the second largest
+        lin2 = valid[1]
 
-    # making sure they exist
-    if lines is not None:
-        # setting the first detected line as the base
-        x1, y1, x2, y2 = lines[0][0]
-        # start pt
-        base_start = (x1, y1)
+        #turning the line into a numpy array
+        lin1 = np.array(lin1)
+        lin2 = np.array(lin2)
 
-        # endpt
-        base_end = (x2, y2)
+        if lin1 is not None and lin2 is not None:
+            #finding the minimum length between the 2 arrays
+            min_len = min(len(lin1), len(lin2))
 
-        # setting the first line as l1
-        l1.append([(x1, y1), (x2, y2)])
+            #cropping each line to fit the minimum length
+            lin1 = lin1[:min_len]
+            lin2 = lin2[:min_len]
 
-        # checking other detected lines
-        for line in lines[1:]:
-            x1, y1, x2, y2 = line[0]
-            l_start = (x1, y1)
-            l_end = (x2, y2)
+            #iterating through list
+            for i in range(min_len):
+                #extracting coordinates
+                x1, y1 = lin1[i, 0]
+                x2, y2 = lin2[i, 0]
 
-            # finding angle diff between 1st line n detected line (sorting)
-            angle = angles(base_start, base_end, l_start, l_end)
+            #finding the average of each coordinate
+                mid_x = (x1 + x2) // 2
+                mid_y = (y1 + y2) // 2
+                #adding coordinates to list
+                mid.append([mid_x, mid_y])
 
-            # filtering through length
-            length = np.linalg.norm(np.array([x2 - x1, y2 - y1]))
-            if length < 500:
-                # big diff
-                if angle > 10:
-                    l1.append([(x1, y1), (x2, y2)])
-                # small diff
-                else:
-                    l2.append([(x1, y1), (x2, y2)])
+            #turning list into a numpy array
+            mid =np.array(mid)
 
-        if len(l1) > 1:
-            # drawing the 2 lines
-            cv2.line(croi, l1[0][0], l1[0][1], (0, 255, 0), 8)
-            cv2.line(croi, l1[1][0], l1[1][1], (0, 255, 0), 8)
+            if len(mid) >= 1:
+                #drawing all the lines
+                cv2.polylines(roi, [lin1], False, (255, 0, 0), 5, lineType=cv2.LINE_AA)
+                cv2.polylines(roi, [lin2], False, (255, 0, 0), 5, lineType=cv2.LINE_AA)
+                cv2.polylines(roi, [mid], False, (0, 0, 255), 3, lineType=cv2.LINE_AA)
 
-            # setting center of the roi as reference pt
-            r_point = (croi.shape[1] // 2, croi.shape[0] // 2)
-
-            # finding top and bottom endpts for base line (line1)
-            x1, y1, x2, y2 = l1[0][0][0], l1[0][0][1], l1[0][1][0], l1[0][1][1]
-            if distance((x1, y1), r_point) > distance((x2, y2), r_point):
-                b_endpt_1 = (x1, y1)
-            else:
-                b_endpt_1 = (x2, y2)
-            if distance((x1, y1), r_point) < distance((x2, y2), r_point):
-                t_endpt_1 = (x1, y1)
-            else:
-                t_endpt_1 = (x2, y2)
-
-            # finding top and bottom endpts for line2 by comparing distances
-            x1, y1, x2, y2 = l1[1][0][0], l1[1][0][1], l1[1][1][0], l1[1][1][1]
-            # finding the pt closest to the endpt
-            if distance((x1, y1), b_endpt_1) < distance((x2, y2), b_endpt_1):
-                b_endpt_2, t_endpt_2 = (x1, y1), (x2, y2)
-            else:
-                b_endpt_2, t_endpt_2 = (x2, y2), (x1, y1)
-
-            # drawing the endpts
-            # blue for bottom
-            cv2.circle(croi, b_endpt_1, 10, (255, 0, 0), -1)
-            cv2.circle(croi, b_endpt_2, 10, (255, 0, 0), -1)
-
-            # yellow for top
-            cv2.circle(croi, t_endpt_1, 10, (0, 255, 255), -1)
-            cv2.circle(croi, t_endpt_2, 10, (0, 255, 255), -1)
-
-            # calculating midpts
-            midpt1 = ((l1[0][0][0] + l1[0][1][0]) // 2, (l1[0][0][1] + l1[0][1][1]) // 2)
-            midpt2 = ((l1[1][0][0] + l1[1][1][0]) // 2, (l1[1][0][1] + l1[1][1][1]) // 2)
-
-            # drawing midpts (red!)
-            cv2.circle(croi, midpt1, 10, (0, 0, 255), -1)
-            cv2.circle(croi, midpt2, 10, (0, 0, 255), -1)
-
-            # "horizontally" connecting the pts to form a row of centerpts
-            c1 = ((midpt1[0] + midpt2[0]) // 2, (midpt1[1] + midpt2[1]) // 2)
-            c2 = ((b_endpt_1[0] + b_endpt_2[0]) // 2, (b_endpt_1[1] + b_endpt_2[1]) // 2)
-            c3 = ((t_endpt_1[0] + t_endpt_2[0]) // 2, (t_endpt_1[1] + t_endpt_2[1]) // 2)
-
-            # drawing them out
-            cv2.circle(croi, c1, 10, (42, 42, 165), -1)
-            cv2.circle(croi, c2, 10, (42, 42, 165), -1)
-            cv2.circle(croi, c3, 10, (42, 42, 165), -1)
-
-            # making them into an array (connecting for centerline)
-            points = np.array([c1, c2, c3], np.int32)
-            # reshaping for polylines
-            points = points.reshape((-1, 1, 2))
-            # drawing as polyline
-            cv2.polylines(croi, [points], isClosed=False, color=(0, 255, 255), thickness=2)
 
     # putting back roi
-    frame[800:400, 0:1980] = croi
+    frame[400:800, 0:1980] = roi
     return frame
 
 
 # video capture
-cap = cv2.VideoCapture("roaddetection.mp4")
+cap = cv2.VideoCapture("photos/roaddetection.mp4")
 
 if not cap.isOpened():
     print("uh oh error")
@@ -167,7 +124,7 @@ while True:
     processed_frame = process_frame(frame)
     # drawing out roi
     #cv2.rectangle(processed_frame, (250, 100), (1100, 600), (0, 255, 0), 2)
-    cv2.rectangle(processed_frame, (0, 800), (1980, 400), (0, 255, 0), 2)
+    cv2.rectangle(processed_frame, (0, 900), (1880, 400), (0, 255, 0), 2)
     # displaying overlay
     cv2.imshow("Detection", processed_frame)
     # exit w "q"
