@@ -1,0 +1,38 @@
+import cv2
+import numpy as np
+
+def transparent(background, overlay):
+   h, w = background.shape[:2]
+
+   new_h = h // 5
+   new_w = w // 5
+
+   resized = cv2.resize(overlay, (new_h, new_w))
+
+   x = 1536
+   y = 0
+
+   roi = background[0:0+new_h, 1536:1536+new_w]
+  
+   overlay_color = resized[:, :, :3]
+   overlay_alpha = resized[:, :, 3:] / 255
+
+   blend = (overlay_alpha * overlay_color) + ((1 - overlay_alpha) * roi)
+
+   background[0:0+new_h, 1536:1536+new_w] = blend
+
+   return background
+
+vid = cv2.VideoCapture("photos/actual vid.mp4")
+while True:
+  ret, frame = vid.read()
+  overlay = cv2.imread("photos/red-arrow-png-22.png", cv2.IMREAD_UNCHANGED)
+  bg = transparent(frame, overlay)
+  cv2.imshow("final", bg)
+  
+  key = cv2.waitKey(1)
+  if cv2.waitKey(1) & 0xFF == ord('q'):
+      break
+video.release()
+cv2.destroyAllWindows()
+
