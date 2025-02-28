@@ -1,6 +1,5 @@
 import cv2
 import numpy as np
-import math
 
 def sharpen(frame):
     kernel = np.array([[-1, -1, -1],
@@ -9,107 +8,244 @@ def sharpen(frame):
     sharpened = cv2.filter2D(frame, -1, kernel)
     return sharpened
 
+#input: bg frame, arrow
+#output: arrow and bg frame
+def transparent(background, overlay):
+   #getting h and w of each video
+   h, w = background.shape[:2]
+
+   #dividing by 5
+   new_h = h // 5
+   new_w = w // 5
+
+   #reisizing arrow
+   resized = cv2.resize(overlay, (new_w, new_h))
+
+   x = 1536
+   y = 0
+
+   #position of arrow
+   roi = background[0:0+new_h, 1536:1536+new_w]
+  
+   #extracting RGB
+   overlay_color = resized[:, :, :3]
+   #extracting alpha channel
+   overlay_alpha = resized[:, :, 3:] / 255
+
+   #blending bg
+   blend = (overlay_alpha * overlay_color) + ((1 - overlay_alpha) * roi)
+
+   #putting back in roi
+   background[0:0+new_h, 1536:1536+new_w] = blend
+
+   return background
+
+#input:frame
+#output:skeletonized frame
 def skeleton(frame):
     thinned = cv2.ximgproc.thinning(frame)
     return thinned
 
-def slope(x1, y1, x2, y2):
-    slope = (y2 - y1) / (x2 - x1 + 1e-6)
-    return slope
-
-def preprocess(frame):
-    frame = sharpen(frame)
-    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-    hue, sat, val = cv2.split(hsv)
-    avg_val = np.mean(val)
-    low_white = np.array([0, 0, 200], dtype='uint8')
-    up_white = np.array([180, 80, 255], dtype='uint8')
-    mask1 = cv2.inRange(hsv, low_white, up_white)
-    low_yellow = np.array([18, 80, 100], dtype=np.uint8)
-    up_yellow = np.array([30, 255, 255], dtype=np.uint8)
-    mask2 = cv2.inRange(hsv, low_yellow, up_yellow)
-    lane_mask = cv2.bitwise_or(mask1, mask2)
-    kernel = np.ones((3, 3), np.uint8)  # Smaller kernel
-    open = cv2.morphologyEx(lane_mask, cv2.MORPH_OPEN, kernel, iterations=2)
-    closed = cv2.morphologyEx(open, cv2.MORPH_CLOSE, kernel, iterations=2)
-    #    canny = cv2.Canny(closed, 50, 100)
-    thinned = skeleton(closed)
-
-    return thinned
-
-def roi(edges):
-    # code copied, change later
-    height, width = edges.shape
-    mask = np.zeros_like(edges)
-    polygon = np.array([[
-        (0, height),
-        (0, height / 2),
-        (width, height / 2),
-        (width, height),
-    ]], np.int32)
-    cv2.fillPoly(mask, polygon, 255)  # fill the polygon with blue color
-    cropped_edges = cv2.bitwise_and(edges, mask)
-    cv2.imshow("roi", cropped_edges)
-    return cropped_edges
-#change perspective to be higher?
+#input: preprocessed from
+#output: frame w/ perspective transform
 def perspective(frame):
-# copied, change later
-    copy = frame.copy()
-    height, width = frame.shape[:2]
+    # order: bottom left, bottom right, top right, top left
+    #og source points
+    src = np.float32([(280, 960),(1780, 960),(1230, 710),(900, 710)])
+    #points that its warping to
+    dst = np.float32([(400, 1080),(1520, 1080),(1520, 0),(400, 0)])
+    
+    #masking everywhere else except lane
+    mask = np.zeros_like(frame)
+    #filling mask as white
+    cv2.fillPoly(mask, [np.int32(src)], color=(255, 255, 255))
+    #putting the mask on the frame
+    roi = cv2.bitwise_and(frame, mask)
 
-    og_pts = np.float32([
-        (280, 960),  # Bottom-left
-        (1780, 960),  # Bottom-right
-        (1230, 710),  # Top-left
-        (900, 710)
-    ])
-    dst_pts = np.float32([
-        (400, height),  # Bottom-left (Shifted inward to keep lanes straight)
-        (width - 400, height),  # Bottom-right
-        (width - 400, 0),  # Top-right
-        (400, 0)  # Top-left
-    ])
-    matrix = cv2.getPerspectiveTransform(og_pts, dst_pts)
-    warped = cv2.warpPerspective(frame, matrix, (width, height))
+    #matrix for perspective transforming
+    matrix = cv2.getPerspectiveTransform(src, dst)
+    #warping the frame w/ matrix and frame size
+    warped = cv2.warpPerspective(roi, matrix, (1920, 1080))
+    
     return warped
 
-def transparent(background, overlay):
-    h, w = background.shape[:2]
-    new_h = h // 5
-    new_w = w // 5
-    resized = cv2.resize(overlay, (new_w, new_h))
 
-    x = w - new_w
-    y = 0
+#output: matrix for unwarping
+def unperspective():
+    #og source points
+    src = np.float32([(280, 960),(1780, 960),(1230, 710),(900, 710)])
+    #points that its warping to
+    dst = np.float32([(400, 1080),(1520, 1080),(1520, 0),(400, 0)])
 
-    roi = background[y:y + new_h, x:x + new_w]
+    #matrix for unwarping
+    matrix = cv2.getPerspectiveTransform(dst, src)
 
-    overlay_color = resized[:, :, :3]
-    overlay_alpha = resized[:, :, 3:] / 255
 
-    blend = overlay_alpha * overlay_color + (1 - overlay_alpha) * roi
+    return matrix
+#input: warped frame
+#output: binary mask w/ thinned lanes
+def preprocess(frame):
+    #sharpening the frame
+    frame = sharpen(frame)
 
-    background[y:y + new_h, x:x + new_w] = blend
+    #applying gaussian blur
+    blur = cv2.GaussianBlur(frame, (9,9),0)
 
-    return background
+    #extracting HSV for color detection
+    hsv = cv2.cvtColor(blur, cv2.COLOR_BGR2HSV)
 
+    #masking only yellow and white stuff
+    #lower limit for white
+    lower_white = np.array([0, 0, 200], dtype='uint8') 
+    #upper limit for white
+    upper_white = np.array([180, 80, 255], dtype='uint8')
+    # lower limit for yellow
+    lower_yellow = np.array([18, 80, 100], dtype='uint8')
+    # lower limit for yellow
+    upper_yellow = np.array([30, 255, 255], dtype='uint8')
+    
+    #filtering not white stuff
+    white_mask = cv2.inRange(hsv, lower_white, upper_white)
+    #filtering not yellow stuff
+    yellow_mask = cv2.inRange(hsv, lower_yellow, upper_yellow)
+
+    #combining the white n yellow mask to filter everything thats not yellow or white
+    mask = cv2.bitwise_or(white_mask,yellow_mask)
+    
+    #kernel for morphing
+    kernel = np.ones((3, 3), np.uint8)
+
+    #opening twice for less noise
+    open = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel, iterations=2)
+    #closing twice for clearer lines
+    closed = cv2.morphologyEx(open, cv2.MORPH_CLOSE, kernel, iterations=2)
+
+    #skeletonizing for thin lines
+    thinned = skeleton(closed)
+
+    #returning the thinned lines
+    return thinned
+
+#input: mask, warped frame, original frame
+#output: frame w/ line detection
+def detect_straight_lanes(mask, warped, og):
+    #using houghp to detect straight lines
+    lines = cv2.HoughLinesP(mask, 1, np.pi/180, 50, minLineLength=5, maxLineGap=300)
+
+    #detected left lane
+    left_lanes = []
+    #detected right lane
+    right_lanes = []
+
+    #finding the width of the frame
+    height, width = mask.shape
+    #mid x point of the frame
+    mid_x = width // 2   
+
+    #going thru each detected line
+    for line in lines:
+        #getting the endpt coords of each line
+        x1, y1, x2, y2 = line[0]
+        #finding the slope of each line
+        m = (y2 - y1) / (x2 - x1 + 1e-6)  
+
+        #finding absolute value of slope for steepness check
+        m = abs(m)
+        #making sure line isnt horizontal
+        if m > 0.2:  
+            if x2 < mid_x:
+                    left_lanes.append([x1, y1])
+                    left_lanes.append([x2, y2])
+            elif x1 > mid_x:
+                    right_lanes.append([x1, y1])
+                    right_lanes.append([x2, y2])
+    #np array for left lane
+    left_lane = np.array(left_lanes)
+    #np array for right lane
+    right_lane = np.array(right_lanes)
+    
+    # y_values
+    plot_y = np.linspace(0, 1080)
+
+    #using polyfit
+    #for atleast 1 pt detected
+    if len(left_lane) > 1:
+        #taking y and x coords and fitting it to a line w degree 1
+        left_fit = np.polyfit(left_lane[:, 1], left_lane[:, 0], 1)
+        #slope
+        m = left_fit[0]
+        #intercept
+        b = left_fit[1]
+        left_fit_x = m*plot_y+b
+        if len(left_fit_x) > 1:
+            # x and y values together
+            left_points = np.column_stack((left_fit_x, plot_y)).astype(np.int32)
+            left_points = left_points.reshape((-1, 1, 2))
+            cv2.polylines(warped, [left_points], isClosed=False, color=(255,0,0), thickness=10)
+
+    # same thing for right lane
+    if len(right_lane) > 1:
+        right_fit = np.polyfit(right_lane[:, 1], right_lane[:, 0], 1)
+        #slope
+        m = right_fit[0]
+        #intercept
+        b = right_fit[1]
+        right_fit_x = m*plot_y+b
+        if len(right_fit_x) > 1:
+            right_points = np.column_stack((right_fit_x, plot_y)).astype(np.int32)
+            right_points = right_points.reshape((-1, 1, 2))
+            cv2.polylines(warped, [right_points], isClosed=False, color=(255,0, 0), thickness=10)
+
+    #inverse matrix
+    inverse = unperspective()
+    #unwarping the frame
+    unwarped_lane = cv2.warpPerspective(warped, inverse, (og.shape[1], og.shape[0]))
+
+    #source pts
+    src = np.array([(280, 960), (1780, 960), (1230, 710), (900, 710)])
+
+    #creating a mask
+    mask = np.zeros_like(og)
+    cv2.fillPoly(mask, [src], (255, 255, 255))
+    
+    #removing the lane area
+    roi_og = cv2.bitwise_and(og, cv2.bitwise_not(mask))
+
+    #replacing unwarped roi
+    output = cv2.add(roi_og, unwarped_lane)
+
+    return output
+
+
+
+#input: og frame
+#output: frame w/ overlay
 def process(frame):
+    #warping
     warped = perspective(frame)
+    #masking
     mask = preprocess(warped)
-    cv2.imshow("mask",mask)
-    # detected = detect_lines(mask)
-    # final = draw_straight_lines(warped, detected)
-    return mask
+    #detecting
+    final = detect_straight_lanes(mask,warped,frame)
+    return final
 
-video = cv2.VideoCapture("roaddetection.mp4")
+video = cv2.VideoCapture("photos/actual vid.mp4")
 
 while True:
     ret, frame = video.read()
-    processed = process(frame)
-    # overlay = cv2.imread("redarrow.png", cv2.IMREAD_UNCHANGED)
-    # bg = transparent(frame, overlay)
-    cv2.imshow("og", frame)
-    cv2.imshow("final", processed)
-    key = cv2.waitKey(1)
+    
+    if not ret:
+        print("uh oh error")
+        break
+    
     if cv2.waitKey(1) & 0xFF == ord('q'):
         break
+
+    overlay = cv2.imread("photos/redarrow.png", cv2.IMREAD_UNCHANGED)
+    #adding arrow
+    processed = transparent(frame, overlay)
+
+    processed = process(frame)
+    cv2.imshow("final", processed)
+
+    key = cv2.waitKey(1)
