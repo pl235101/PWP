@@ -1,251 +1,311 @@
 import cv2
 import numpy as np
 
-def sharpen(frame):
-    kernel = np.array([[-1, -1, -1],
-                       [-1, 9, -1],
-                       [-1, -1, -1]])
-    sharpened = cv2.filter2D(frame, -1, kernel)
-    return sharpened
 
-#input: bg frame, arrow
-#output: arrow and bg frame
+def sharpen(frame):
+   kernel = np.array([[-1, -1, -1],
+                      [-1, 9, -1],
+                      [-1, -1, -1]])
+   sharpened = cv2.filter2D(frame, -1, kernel)
+   return sharpened
+
+
+# input: bg frame, arrow
+# output: arrow and bg frame
 def transparent(background, overlay):
-   #getting h and w of each video
+   # getting h and w of each video
    h, w = background.shape[:2]
 
-   #dividing by 5
+   # dividing by 5
    new_h = h // 5
    new_w = w // 5
 
-   #reisizing arrow
+   # reisizing arrow
    resized = cv2.resize(overlay, (new_w, new_h))
 
-   x = 1536
-   y = 0
+   # position of arrow
+   roi = background[0:0 + new_h, 1536:1536 + new_w]
 
-   #position of arrow
-   roi = background[0:0+new_h, 1536:1536+new_w]
-  
-   #extracting RGB
+   # extracting RGB
    overlay_color = resized[:, :, :3]
-   #extracting alpha channel
+   # extracting alpha channel
    overlay_alpha = resized[:, :, 3:] / 255
 
-   #blending bg
+   # blending bg
    blend = (overlay_alpha * overlay_color) + ((1 - overlay_alpha) * roi)
 
-   #putting back in roi
-   background[0:0+new_h, 1536:1536+new_w] = blend
+   # putting back in roi
+   background[0:0 + new_h, 1536:1536 + new_w] = blend
 
    return background
 
-#input:frame
-#output:skeletonized frame
+
+# input:frame
+# output:skeletonized frame
 def skeleton(frame):
-    thinned = cv2.ximgproc.thinning(frame)
-    return thinned
+   thinned = cv2.ximgproc.thinning(frame)
+   return thinned
 
-#input: preprocessed from
-#output: frame w/ perspective transform
+
+# input: preprocessed from
+# output: frame w/ perspective transform
 def perspective(frame):
-    # order: bottom left, bottom right, top right, top left
-    #og source points
-    src = np.float32([(280, 960),(1780, 960),(1230, 710),(900, 710)])
-    #points that its warping to
-    dst = np.float32([(400, 1080),(1520, 1080),(1520, 0),(400, 0)])
-    
-    #masking everywhere else except lane
-    mask = np.zeros_like(frame)
-    #filling mask as white
-    cv2.fillPoly(mask, [np.int32(src)], color=(255, 255, 255))
-    #putting the mask on the frame
-    roi = cv2.bitwise_and(frame, mask)
+   # order: bottom left, bottom right, top right, top left
+   # og source points
+   src = np.float32([(280, 960), (1780, 960), (1230, 710), (900, 710)])
+   # points that its warping to
+   dst = np.float32([(400, 1080), (1520, 1080), (1520, 0), (400, 0)])
 
-    #matrix for perspective transforming
-    matrix = cv2.getPerspectiveTransform(src, dst)
-    #warping the frame w/ matrix and frame size
-    warped = cv2.warpPerspective(roi, matrix, (1920, 1080))
-    
-    return warped
+   # # masking everywhere else except lane for a more precise roi
+   mask = np.zeros_like(frame)
+   # filling mask as white
+   cv2.fillPoly(mask, [np.int32(src)], color=(255, 255, 255))
+   # putting the mask on the frame
+   roi = cv2.bitwise_and(frame, mask)
+
+   # matrix for perspective transforming
+   matrix = cv2.getPerspectiveTransform(src, dst)
+   # warping the frame w/ matrix and frame size
+   warped = cv2.warpPerspective(roi, matrix, (1920, 1080))
+
+   return warped
 
 
-#output: matrix for unwarping
+# output: matrix for unwarping
 def unperspective():
-    #og source points
-    src = np.float32([(280, 960),(1780, 960),(1230, 710),(900, 710)])
-    #points that its warping to
-    dst = np.float32([(400, 1080),(1520, 1080),(1520, 0),(400, 0)])
+   # og source points
+   src = np.float32([(280, 960), (1780, 960), (1230, 710), (900, 710)])
+   # points that its warping to
+   dst = np.float32([(400, 1080), (1520, 1080), (1520, 0), (400, 0)])
 
-    #matrix for unwarping
-    matrix = cv2.getPerspectiveTransform(dst, src)
+   # matrix for unwarping
+   matrix = cv2.getPerspectiveTransform(dst, src)
+
+   return matrix
 
 
-    return matrix
-#input: warped frame
-#output: binary mask w/ thinned lanes
+# input: warped frame
+# output: binary mask w/ thinned lanes
 def preprocess(frame):
-    #sharpening the frame
-    frame = sharpen(frame)
+   # sharpening the frame
+   frame = sharpen(frame)
 
-    #applying gaussian blur
-    blur = cv2.GaussianBlur(frame, (9,9),0)
+   # applying gaussian blur
+   blur = cv2.GaussianBlur(frame, (9, 9), 0)
 
-    #extracting HSV for color detection
-    hsv = cv2.cvtColor(blur, cv2.COLOR_BGR2HSV)
+   # extracting HSV for color detection
+   hsv = cv2.cvtColor(blur, cv2.COLOR_BGR2HSV)
 
-    #masking only yellow and white stuff
-    #lower limit for white
-    lower_white = np.array([0, 0, 200], dtype='uint8') 
-    #upper limit for white
-    upper_white = np.array([180, 80, 255], dtype='uint8')
-    # lower limit for yellow
-    lower_yellow = np.array([18, 80, 100], dtype='uint8')
-    # lower limit for yellow
-    upper_yellow = np.array([30, 255, 255], dtype='uint8')
-    
-    #filtering not white stuff
-    white_mask = cv2.inRange(hsv, lower_white, upper_white)
-    #filtering not yellow stuff
-    yellow_mask = cv2.inRange(hsv, lower_yellow, upper_yellow)
+   # masking only yellow and white stuff
+   # lower limit for white
+   lower_white = np.array([0, 0, 200], dtype='uint8')
+   # upper limit for white
+   upper_white = np.array([180, 80, 255], dtype='uint8')
+   # lower limit for yellow
+   lower_yellow = np.array([18, 80, 100], dtype='uint8')
+   # lower limit for yellow
+   upper_yellow = np.array([30, 255, 255], dtype='uint8')
 
-    #combining the white n yellow mask to filter everything thats not yellow or white
-    mask = cv2.bitwise_or(white_mask,yellow_mask)
-    
-    #kernel for morphing
-    kernel = np.ones((3, 3), np.uint8)
+   # filtering not white stuff
+   white_mask = cv2.inRange(hsv, lower_white, upper_white)
+   # filtering not yellow stuff
+   yellow_mask = cv2.inRange(hsv, lower_yellow, upper_yellow)
 
-    #opening twice for less noise
-    open = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel, iterations=2)
-    #closing twice for clearer lines
-    closed = cv2.morphologyEx(open, cv2.MORPH_CLOSE, kernel, iterations=2)
+   # combining the white n yellow mask to filter everything thats not yellow or white
+   mask = cv2.bitwise_or(white_mask, yellow_mask)
 
-    #skeletonizing for thin lines
-    thinned = skeleton(closed)
+   # kernel for morphing
+   kernel = np.ones((3, 3), np.uint8)
 
-    #returning the thinned lines
-    return thinned
+   # opening twice for less noise
+   open = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel, iterations=2)
+   # closing twice for clearer lines
+   closed = cv2.morphologyEx(open, cv2.MORPH_CLOSE, kernel, iterations=2)
 
-#input: mask, warped frame, original frame
-#output: frame w/ line detection
+   # skeletonizing for thin lines
+   thinned = skeleton(closed)
+
+   # returning the thinned lines
+   return thinned
+
+
+# input: mask, warped frame, original frame
+# output: frame w/ line detection
 def detect_straight_lanes(mask, warped, og):
-    #using houghp to detect straight lines
-    lines = cv2.HoughLinesP(mask, 1, np.pi/180, 50, minLineLength=5, maxLineGap=300)
+   # using houghp to detect straight lines
+   lines = cv2.HoughLinesP(mask, 1, np.pi / 180, 50, minLineLength=5, maxLineGap=300)
 
-    #detected left lane
-    left_lanes = []
-    #detected right lane
-    right_lanes = []
+   # detected left lane                                      
+   left_lanes = []
+   # detected right lane
+   right_lanes = []
 
-    #finding the width of the frame
-    height, width = mask.shape
-    #mid x point of the frame
-    mid_x = width // 2   
+   # finding the width of the frame
+   height, width = mask.shape
+   # mid x point of the frame
+   mid_x = width // 2
 
-    #going thru each detected line
-    for line in lines:
-        #getting the endpt coords of each line
-        x1, y1, x2, y2 = line[0]
-        #finding the slope of each line
-        m = (y2 - y1) / (x2 - x1 + 1e-6)  
+   # going thru each detected line
+   if lines is not None:
+       for line in lines:
+           # getting the endpt coords of each line
+           x1, y1, x2, y2 = line[0]
+           # finding the slope of each line
+           m = (y2 - y1) / (x2 - x1 + 1e-6)
 
-        #finding absolute value of slope for steepness check
-        m = abs(m)
-        #making sure line isnt horizontal
-        if m > 0.2:  
-            if x2 < mid_x:
-                    left_lanes.append([x1, y1])
-                    left_lanes.append([x2, y2])
-            elif x1 > mid_x:
-                    right_lanes.append([x1, y1])
-                    right_lanes.append([x2, y2])
-    #np array for left lane
-    left_lane = np.array(left_lanes)
-    #np array for right lane
-    right_lane = np.array(right_lanes)
-    
-    # y_values
-    plot_y = np.linspace(0, 1080)
+           # finding absolute value of slope for steepness check
+           m = abs(m)
+           # making sure line isnt horizontal
+           if m > 0.3:
+               if x2 < mid_x:
+                   left_lanes.append([x1, y1])
+                   left_lanes.append([x2, y2])
+               elif x1 > mid_x:
+                   right_lanes.append([x1, y1])
+                   right_lanes.append([x2, y2])
+   # np array for left lane
+   left_lane = np.array(left_lanes)
+   # np array for right lane
+   right_lane = np.array(right_lanes)
 
-    #using polyfit
-    #for atleast 1 pt detected
-    if len(left_lane) > 1:
-        #taking y and x coords and fitting it to a line w degree 1
-        left_fit = np.polyfit(left_lane[:, 1], left_lane[:, 0], 1)
-        #slope
-        m = left_fit[0]
-        #intercept
-        b = left_fit[1]
-        left_fit_x = m*plot_y+b
-        if len(left_fit_x) > 1:
-            # x and y values together
-            left_points = np.column_stack((left_fit_x, plot_y)).astype(np.int32)
-            left_points = left_points.reshape((-1, 1, 2))
-            cv2.polylines(warped, [left_points], isClosed=False, color=(255,0,0), thickness=10)
+   # y_values
+   plot_y = np.linspace(0, 1080)
 
-    # same thing for right lane
-    if len(right_lane) > 1:
-        right_fit = np.polyfit(right_lane[:, 1], right_lane[:, 0], 1)
-        #slope
-        m = right_fit[0]
-        #intercept
-        b = right_fit[1]
-        right_fit_x = m*plot_y+b
-        if len(right_fit_x) > 1:
-            right_points = np.column_stack((right_fit_x, plot_y)).astype(np.int32)
-            right_points = right_points.reshape((-1, 1, 2))
-            cv2.polylines(warped, [right_points], isClosed=False, color=(255,0, 0), thickness=10)
+   # using polyfit
+   # for atleast 1 pt detected
+   if len(left_lane) > 1:
+       # taking y and x coords and fitting it to a line w degree 1
+       left_fit = np.polyfit(left_lane[:, 1], left_lane[:, 0], 1)
+       # slope
+       m = left_fit[0]
+       # intercept
+       b = left_fit[1]
+       left_fit_x = m * plot_y + b
+       if len(left_fit_x) > 1:
+           # x and y values together
+           left_points = np.column_stack((left_fit_x, plot_y)).astype(np.int32)
+           left_points = left_points.reshape((-1, 1, 2))
+           cv2.polylines(warped, [left_points], isClosed=False, color=(255, 253, 208), thickness=10)
 
-    #inverse matrix
-    inverse = unperspective()
-    #unwarping the frame
-    unwarped_lane = cv2.warpPerspective(warped, inverse, (og.shape[1], og.shape[0]))
+   # same thing for right lane
+   if len(right_lane) > 1:
+       right_fit = np.polyfit(right_lane[:, 1], right_lane[:, 0], 1)
+       # slope
+       m = right_fit[0]
+       # intercept
+       b = right_fit[1]
+       right_fit_x = m * plot_y + b
+       if len(right_fit_x) > 1:
+           right_points = np.column_stack((right_fit_x, plot_y)).astype(np.int32)
+           right_points = right_points.reshape((-1, 1, 2))
+           cv2.polylines(warped, [right_points], isClosed=False, color=(255, 253, 208), thickness=10)
+   if right_points is not None and left_points is not None:
 
-    #source pts
-    src = np.array([(280, 960), (1780, 960), (1230, 710), (900, 710)])
+       midline = (right_points + left_points)//2
+       cv2.polylines(warped, [midline], isClosed=False, color=(255, 0, 0), thickness=10)
+   # inverse matrix
+   inverse = unperspective()
+   # unwarping the frame
+   unwarped_lane = cv2.warpPerspective(warped, inverse, (og.shape[1], og.shape[0]))
 
-    #creating a mask
-    mask = np.zeros_like(og)
-    cv2.fillPoly(mask, [src], (255, 255, 255))
-    
-    #removing the lane area
-    roi_og = cv2.bitwise_and(og, cv2.bitwise_not(mask))
+   # source pts
+   src = np.array([(280, 960), (1780, 960), (1230, 710), (900, 710)])
 
-    #replacing unwarped roi
-    output = cv2.add(roi_og, unwarped_lane)
+   # creating a mask
+   mask = np.zeros_like(og)
+   cv2.fillPoly(mask, [src], (255, 255, 255))
 
-    return output
+   # removing the lane area
+   roi_og = cv2.bitwise_and(og, cv2.bitwise_not(mask))
+
+   # replacing unwarped roi
+   output = cv2.add(roi_og, unwarped_lane)
+
+   return output
+
+def detect_arrows(frame):
+   right_template = cv2.imread("road_right.png")
+   left_template = cv2.imread("road_left.png")
+   detected_direction = 0
+   best_match  = 0
+   
+   result_right = cv2.matchTemplate(frame, right_template, cv2.TM_CCOEFF_NORMED)
+   _, max_val_r, _, max_loc_r = cv2.minMaxLoc(result_right)
+
+   if max_val_r > 0.8 and max_val_r > best_match:
+      best_match = max_val_r
+      detected_direction = "right"
+      h, w , _ = right_template.shape
+      top_left = max_loc_r
+      bottom_right = (top_left[0] + w, top_left[1] + h)
+      cv2.rectangle(frame, top_left, bottom_right, (255, 0, 0), 2)
+
+   
+   result_left = cv2.matchTemplate(frame, left_template, cv2.TM_CCOEFF_NORMED)
+   _, max_val_l, _, max_loc_l = cv2.minMaxLoc(result_left)
+   if max_val_l > 0.7 and max_val_l > best_match:
+      best_match = max_val_l
+      detected_direction = "left"
+      h, w , _ = left_template.shape
+      top_left = max_loc_l
+      bottom_right = (top_left[0] + w, top_left[1] + h)
+      cv2.rectangle(frame, top_left, bottom_right, (255, 0, 0), 2)
+      print(detected_direction)
+
+   return detected_direction
 
 
 
-#input: og frame
-#output: frame w/ overlay
+# input: og frame
+# output: frame w/ overlay
 def process(frame):
-    #warping
-    warped = perspective(frame)
-    #masking
-    mask = preprocess(warped)
-    #detecting
-    final = detect_straight_lanes(mask,warped,frame)
-    return final
+   # warping
 
-video = cv2.VideoCapture("photos/actual vid.mp4")
+   warped = perspective(frame)
+   cv2.imshow("warped", warped)
+   arrows = detect_arrows(warped)
+   
+   #masking
+   mask = preprocess(warped)
+   # detecting
+   final = detect_straight_lanes(mask, warped, frame)
+   return final
+
+right_arrow_overlay = cv2.imread("right.png", cv2.IMREAD_UNCHANGED)
+left_arrow_overlay = cv2.imread("left.png", cv2.IMREAD_UNCHANGED)
+straight_arrow_overlay = cv2.imread("straight.png", cv2.IMREAD_UNCHANGED)
+timer = 0  
+
+cap = cv2.VideoCapture("actualvid.mp4")
+i=0
+frameTime = 1
 
 while True:
-    ret, frame = video.read()
-    
-    if not ret:
-        print("uh oh error")
-        break
-    
-    if cv2.waitKey(1) & 0xFF == ord('q'):
-        break
+   ret = cap.grab()
+   i = i + 1
+   if i % 5 == 0:
+       ret, frame = cap.retrieve()
+       warped = perspective(frame)
+       direction = detect_arrows(warped)
 
-    overlay = cv2.imread("photos/redarrow.png", cv2.IMREAD_UNCHANGED)
-    #adding arrow
-    processed = transparent(frame, overlay)
+       if direction == "right":
+            print("keeping right")
+            timer = 35
+            overlay = right_arrow_overlay
+       elif direction == "left":
+            print("keeping left")
+            timer = 35
+            overlay = left_arrow_overlay
+        
 
-    processed = process(frame)
-    cv2.imshow("final", processed)
+       if timer > 0:
+            timer -= 1
+       else:
+            overlay = straight_arrow_overlay
 
-    key = cv2.waitKey(1)
+       processed = transparent(frame, overlay)
+       processed= process(frame)
+       cv2.imshow("final", processed)
+       if cv2.waitKey(frameTime) & 0xFF == ord('q'):
+           break
+
