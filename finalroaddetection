@@ -258,22 +258,18 @@ def detect_arrows(frame):
     result_right = cv2.matchTemplate(frame, right_template, cv2.TM_CCOEFF_NORMED)
     # finding max similarity value
     _, max_val_r, _, _ = cv2.minMaxLoc(result_right)
-    print(f"Right arrow match: {max_val_r}")
 
     # same thing w/ left arrow
     result_left = cv2.matchTemplate(frame, left_template, cv2.TM_CCOEFF_NORMED)
     _, max_val_l, _, _ = cv2.minMaxLoc(result_left)
-    print(f"Left arrow match: {max_val_l}")
 
     # setting a threshold
     # if value is bigger than threshold and the left
-    if max_val_r > 0.5 and max_val_r > max_val_l:
+    if max_val_r > 0.61 and max_val_r > max_val_l:
         detected_direction = "right"
     # if value is bigger than threshold
     elif max_val_l > 0.5 and max_val_l > max_val_r:
         detected_direction = "left"
-
-    print(f"Detected direction: {detected_direction}")
     return detected_direction
 
 # input: og frame, arrow, overlay
