@@ -267,7 +267,7 @@ def detect_arrows(frame):
     # if value is bigger than threshold and the left
     if max_val_r > 0.61 and max_val_r > max_val_l:
         detected_direction = "right"
-    # if value is bigger than threshold
+    # if value is bigger than threshold and the right
     elif max_val_l > 0.5 and max_val_l > max_val_r:
         detected_direction = "left"
     return detected_direction
@@ -319,7 +319,8 @@ class guiwindows:
         self.straight_arrow = cv2.imread("photos/straight.png", cv2.IMREAD_UNCHANGED)
         # intilizing to 0
         self.t = 0
-        self.current_overlay = self.straight_arrow  # Added to track the current overlay
+        #current array direction (straight)
+        self.current_overlay = self.straight_arrow 
 
     #setting up login page
     def setup_login_page(self):
@@ -435,6 +436,7 @@ class guiwindows:
         backward.bind('<ButtonPress-1>', lambda event: self.log_direction('backward', user, text_area))
         backward.bind('<ButtonRelease-1>', lambda event: self.log_direction('stop', user, text_area))
 
+        #retriving computer info for log
         ip_addr = socket.gethostbyname(socket.gethostname())
         time = datetime.now()
         timestamp = time.strftime('%Y-%m-%d %H:%M:%S')
