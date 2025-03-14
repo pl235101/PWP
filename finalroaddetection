@@ -1,0 +1,559 @@
+import sqlite3
+import messages as msg
+from tkinter import *
+from tkinter.scrolledtext import *
+from tkinter.font import Font
+from PIL import Image, ImageTk
+from threading import Thread
+import cv2
+import numpy as np
+import os
+import subprocess
+from datetime import *
+import socket
+
+# class for database for user data
+class database:
+    def __init__(self):
+        self.create_db()
+
+    #establishing a connection
+    def connect(self):
+        conn = sqlite3.connect('userinfo.db')
+        cursor = conn.cursor()
+        return conn, cursor
+    
+    #commiting and closing connection
+    def commit_n_close(self, conn):
+        conn.commit()
+        conn.close()
+
+    #creating database
+    def create_db(self):
+        conn, cursor = self.connect()
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT NOT NULL,
+                password TEXT NOT NULL
+                )
+        ''')
+        self.commit_n_close(conn)
+
+    #adding a new username
+    def insert_user(self, username, password):
+        conn, cursor = self.connect()
+        cursor.execute('INSERT INTO users (username, password) VALUES (?, ?)', (username, password))
+        self.commit_n_close(conn)
+
+    #checking if a username already in the system
+    def user_exists(self, username):
+        conn, cursor = self.connect()
+        cursor.execute('SELECT id FROM users WHERE username = ?', (username,))
+        result = cursor.fetchone()
+        self.commit_n_close(conn)
+        return result is not None
+    
+    #finding the password
+    def get_password(self, username):
+        conn, cursor = self.connect()
+        cursor.execute('SELECT password FROM users WHERE username = ?', (username,))
+        password = cursor.fetchone()
+        self.commit_n_close(conn)
+        return password[0] if password else None
+
+# process functions
+#sharpen function
+def sharpen(frame):
+    kernel = np.array([[-1, -1, -1],
+                       [-1, 9, -1],
+                       [-1, -1, -1]])
+    sharpened = cv2.filter2D(frame, -1, kernel)
+    return sharpened
+
+# input: preprocessed from
+# output: frame w/ perspective transform
+def perspective(frame):
+    # order: bottom left, bottom right, top right, top left
+    # og source points
+    src = np.float32([(140, 480), (890, 480), (615, 355), (450, 355)])
+    # points that its warping to
+    dst = np.float32([(200, 540), (760, 540), (760, 0), (200, 0)])
+    # masking everywhere else except lane for a more precise roi
+    mask = np.zeros_like(frame)
+    # filling mask as white
+    cv2.fillPoly(mask, [np.int32(src)], color=(255, 255, 255))
+    # putting the mask on the frame
+    roi = cv2.bitwise_and(frame, mask)
+    # matrix for perspective transforming
+    matrix = cv2.getPerspectiveTransform(src, dst)
+    # warping the frame w/ matrix and frame size
+    warped = cv2.warpPerspective(roi, matrix, (960, 540))
+    return warped
+
+# output: matrix for unwarping
+def unperspective():
+   # og source points
+   src = np.float32([(140, 480), (890, 480), (615, 355), (450, 355)])
+   # points that its warping to
+   dst = np.float32([(200, 540), (760, 540), (760, 0), (200, 0)])
+   # matrix for unwarping
+   matrix = cv2.getPerspectiveTransform(dst, src)
+   return matrix
+
+# input:frame
+# output:skeletonized frame
+def skeleton(frame):
+   thinned = cv2.ximgproc.thinning(frame)
+   return thinned
+
+# input: warped frame
+# output: binary mask w/ thinned lanes
+def preprocess(frame):
+   # sharpening the frame
+   frame = sharpen(frame)
+   # applying gaussian blur
+   blur = cv2.GaussianBlur(frame, (9, 9), 0)
+   # extracting HSV for color detection
+   hsv = cv2.cvtColor(blur, cv2.COLOR_BGR2HSV)
+   # masking only yellow and white stuff
+   # lower limit for white
+   lower_white = np.array([0, 0, 200], dtype='uint8')
+   # upper limit for white
+   upper_white = np.array([180, 80, 255], dtype='uint8')
+   # lower limit for yellow
+   lower_yellow = np.array([18, 80, 100], dtype='uint8')
+   # lower limit for yellow
+   upper_yellow = np.array([30, 255, 255], dtype='uint8')
+   # filtering not white stuff
+   white_mask = cv2.inRange(hsv, lower_white, upper_white)
+   # filtering not yellow stuff
+   yellow_mask = cv2.inRange(hsv, lower_yellow, upper_yellow)
+   # combining the white n yellow mask to filter everything thats not yellow or white
+   mask = cv2.bitwise_or(white_mask, yellow_mask)
+   # kernel for morphing
+   kernel = np.ones((2, 2), np.uint8)
+   # opening twice for less noise
+   open = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel, iterations=2)
+   # closing twice for clearer lines
+   closed = cv2.morphologyEx(open, cv2.MORPH_CLOSE, kernel, iterations=2)
+   # skeletonizing for thin lines
+   thinned = skeleton(closed)
+   # returning the thinned lines
+   return thinned
+
+# input: mask, warped frame, original frame
+# output: frame w/ line detection
+def detect_straight_lanes(mask, warped, og):
+    # using houghp to detect straight lines
+    lines = cv2.HoughLinesP(mask, 1, np.pi / 180, 50, minLineLength=1, maxLineGap=100)
+    # list of left n right lane pts
+    left_lanes = []
+    right_lanes = []
+    # finding height n width
+    height, width = mask.shape
+    # finding midpt on x-coordinate
+    mid_x = width // 2
+
+    if lines is not None:
+        # iterating thru each line
+        for line in lines:
+            # the start and end coords of the line
+            x1, y1, x2, y2 = line[0]
+            # calculating slope
+            m = (y2 - y1) / (x2 - x1 + 1e-6)
+            # finding absolute value of slope for steepness check
+            m = abs(m)
+            # making sure line isnt horizontal
+            if m > 0.3:
+                if x2 < mid_x:
+                    left_lanes.append([x1, y1])
+                    left_lanes.append([x2, y2])
+                elif x1 > mid_x:
+                    right_lanes.append([x1, y1])
+                    right_lanes.append([x2, y2])
+    # np array for left lane
+    left_lane = np.array(left_lanes, dtype=np.int32)
+    # np array for right lane
+    right_lane = np.array(right_lanes, dtype=np.int32)
+    # y_values
+    plot_y = np.linspace(0, height, num=height)
+
+    left_points = None
+    right_points = None
+
+    # using polyfit
+    # for atleast 1 pt detected
+    if len(left_lane) > 1:
+        # taking y and x coords and fitting it to a line w degree 1
+        left_fit = np.polyfit(left_lane[:, 1], left_lane[:, 0], 1)
+        # slope
+        m = left_fit[0]
+        # intercept
+        b = left_fit[1]
+        left_fit_x = m * plot_y + b
+        if len(left_fit_x) > 1:
+           # x and y values together
+            left_points = np.column_stack((left_fit_x, plot_y)).astype(np.int32)
+            left_points = left_points.reshape((-1, 1, 2))
+            cv2.polylines(warped, [left_points], isClosed=False, color=(0, 0, 255), thickness=10)
+
+   # same thing for right lane
+    if len(right_lane) > 1:
+       right_fit = np.polyfit(right_lane[:, 1], right_lane[:, 0], 1)
+       # slope
+       m = right_fit[0]
+       # intercept
+       b = right_fit[1]
+       right_fit_x = m * plot_y + b
+       if len(right_fit_x) > 1:
+           right_points = np.column_stack((right_fit_x, plot_y)).astype(np.int32)
+           right_points = right_points.reshape((-1, 1, 2))
+           cv2.polylines(warped, [right_points], isClosed=False, color=(255, 0, 0), thickness=10)
+
+    #calculating and drawing centerline by finding average of points
+    if left_points is not None and right_points is not None:
+        midline = (right_points + left_points) // 2
+        cv2.polylines(warped, [midline], isClosed=False, color=(0, 255, 0), thickness=10)
+
+    # inverse matrix
+    inverse = unperspective()
+    # unwarping the frame
+    unwarped_lane = cv2.warpPerspective(warped, inverse, (og.shape[1], og.shape[0]))
+    # source pts
+    src = np.array([(140, 480), (890, 480), (615, 355), (450, 355)], dtype=np.int32)
+    # creating a mask
+    mask = np.zeros(og.shape, dtype=np.uint8)
+    cv2.fillPoly(mask, [src], (255, 255, 255))
+    # removing the lane area
+    roi_og = cv2.bitwise_and(og, cv2.bitwise_not(mask))
+    # replacing unwarped roi
+    output = cv2.add(roi_og, unwarped_lane)
+    return output
+
+# input: og frame
+# output: frame w/ overlay
+def process(frame):
+    # warping
+    warped = perspective(frame)
+    # masking
+    mask = preprocess(warped)
+    # detecting
+    final = detect_straight_lanes(mask, warped, frame)
+    return final
+# input: og frame
+# output: direction of arrow on road
+def detect_arrows(frame):
+    #converting it to grayscale
+    frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+
+    # load templates in grayscale
+    right_template = cv2.imread("photos/road_right.png", cv2.IMREAD_GRAYSCALE)
+    left_template = cv2.imread("photos/road_left.png", cv2.IMREAD_GRAYSCALE)
+
+    # defaulting to no direction
+    detected_direction = "none"
+
+    # template match
+    result_right = cv2.matchTemplate(frame, right_template, cv2.TM_CCOEFF_NORMED)
+    # finding max similarity value
+    _, max_val_r, _, _ = cv2.minMaxLoc(result_right)
+    print(f"Right arrow match: {max_val_r}")
+
+    # same thing w/ left arrow
+    result_left = cv2.matchTemplate(frame, left_template, cv2.TM_CCOEFF_NORMED)
+    _, max_val_l, _, _ = cv2.minMaxLoc(result_left)
+    print(f"Left arrow match: {max_val_l}")
+
+    # setting a threshold
+    # if value is bigger than threshold and the left
+    if max_val_r > 0.5 and max_val_r > max_val_l:
+        detected_direction = "right"
+    # if value is bigger than threshold
+    elif max_val_l > 0.5 and max_val_l > max_val_r:
+        detected_direction = "left"
+
+    print(f"Detected direction: {detected_direction}")
+    return detected_direction
+
+# input: og frame, arrow, overlay
+# output: arrow on frame
+def transparent(background, overlay):
+    #getting height n width
+    h, w = background.shape[:2]
+    #resizing arrow to 1/5 of bg
+    new_h = h // 5
+    new_w = w // 5
+    #resizing
+    resized = cv2.resize(overlay, (new_w, new_h))
+    #placing it to the top-right corner
+    x_start = min(768, w - new_w)
+    y_start = 0
+    x_end = min(x_start + new_w, w)
+    y_end = min(y_start + new_h, h)
+    # position of arrow
+    roi = background[y_start:y_end, x_start:x_end]
+    # extracting RGB
+    overlay_color = resized[:, :, :3]
+    # extracting alpha channel
+    overlay_alpha = resized[:, :, 3] / 255
+    overlay_alpha = overlay_alpha[..., None]
+    # blending bg
+    blend = (overlay_alpha * overlay_color) + ((1 - overlay_alpha) * roi)
+    # putting back in roi
+    background[y_start:y_end, x_start:x_end] = blend.astype(np.uint8)
+    return background
+
+#class for the gui
+class guiwindows:
+    def __init__(self, root):
+        #root of window, title, size
+        self.root = root
+        self.root.title('user login')
+        self.root.geometry('320x150')
+        #intilizing database
+        self.database = database()
+        self.video_running = False
+        self.cap = None
+        self.setup_login_page()
+
+        # loading road arrow overlays
+        self.right_arrow = cv2.imread("photos/right.png", cv2.IMREAD_UNCHANGED)
+        self.left_arrow = cv2.imread("photos/left.png", cv2.IMREAD_UNCHANGED)
+        self.straight_arrow = cv2.imread("photos/straight.png", cv2.IMREAD_UNCHANGED)
+        # intilizing to 0
+        self.t = 0
+        self.current_overlay = self.straight_arrow  # Added to track the current overlay
+
+    #setting up login page
+    def setup_login_page(self):
+        self.user_entry_text = StringVar()
+        self.pw_entry_text = StringVar()
+        entries_panel = Frame(self.root)
+        entries_panel.grid(row=1, column=1, rowspan=3, padx=10, pady=5, sticky='NWSE')
+        username_entry_label = Label(entries_panel, text='username: ')
+        username_entry_label.grid(row=1, column=1, padx=5, pady=5)
+        username_entry = Entry(entries_panel, textvariable=self.user_entry_text)
+        username_entry.grid(row=1, column=2, padx=5, pady=5)
+        password_entry_label = Label(entries_panel, text='password: ')
+        password_entry_label.grid(row=2, column=1, padx=5, pady=5)
+        password_entry = Entry(entries_panel, textvariable=self.pw_entry_text, show='*')
+        password_entry.grid(row=2, column=2, padx=5, pady=5)
+        buttons_panel = Frame(self.root)
+        buttons_panel.grid(row=5, column=1, rowspan=1, padx=45, pady=5, sticky='NWSE')
+        login_button = Button(buttons_panel, text='login', command=self.login)
+        login_button.grid(row=1, column=1, ipadx=3, ipady=2, padx=5, pady=5)
+        create_acc_button = Button(buttons_panel, text='create account', command=self.create_acc)
+        create_acc_button.grid(row=1, column=2, ipadx=3, ipady=2, padx=5, pady=5)
+
+    #login button command
+    def login(self):
+        #retrieve username
+        username = self.user_entry_text.get()
+        #retrieve passwird
+        password = self.pw_entry_text.get()
+        #if one box is empty display msg
+        if not username or not password:
+            msg.blank_entry()
+            return
+        #checking if username exists
+        if not self.database.user_exists(username):
+            msg.invalid_user()
+            return
+        #checking if password exists
+        if password != self.database.get_password(username):
+            msg.wrong_pw()
+            return
+        #successful login
+        msg.login(username)
+        self.create_robot_gui(username)
+
+    #creating account
+    def create_acc(self):
+        #retriving username
+        username = self.user_entry_text.get()
+        #retriving password
+        password = self.pw_entry_text.get()
+        #if one box is empty display msg
+        if not username or not password:
+            msg.blank_entry()
+            return
+        #checking if username exists
+        if self.database.user_exists(username):
+            msg.user_exists()
+            return
+        #inserting new user
+        self.database.insert_user(username, password)
+        #sucess msg for account
+        msg.create_acc()
+
+    #robot command control gui
+    def create_robot_gui(self, user):
+        robot_gui = Toplevel()
+        robot_gui.title('robot gui')
+        robot_gui.geometry('1100x800')
+        custom_font = Font(family='Poppins', size=20)
+
+        vid_stream_panel = Frame(robot_gui)
+        vid_stream_panel.grid(row=1, column=1, padx=5, pady=5, sticky='NW')
+        self.stream_elem = Label(vid_stream_panel, text='original vid')
+        self.stream_elem.grid(row=1, column=1, padx=10, pady=10)
+        self.overlay_elem = Label(vid_stream_panel, text='processed vid')
+        self.overlay_elem.grid(row=2, column=1, padx=10, pady=10)
+
+        buttons_panel = Frame(robot_gui)
+        buttons_panel.grid(row=1, column=2, padx=20, pady=20, sticky='NE')
+        log_panel = Frame(robot_gui)
+        log_panel.grid(row=2, column=2, padx=10, pady=10, sticky='SE')
+
+        text_area = ScrolledText(log_panel, width=55, height=5)
+        text_area.grid(row=1, padx=5, pady=5, ipadx=20, ipady=20)
+        text_area.config(state='disabled')
+
+        log_button = Button(log_panel, text='open log file', command=self.open_log_file, font=custom_font)
+        log_button.grid(row=2, padx=4, pady=5)
+
+        forward = Button(buttons_panel, text='move forward', font=custom_font)
+        forward.grid(row=1, column=2, padx=5, pady=5, sticky='we', columnspan=2)
+        forward.bind('<ButtonPress-1>', lambda event: self.log_direction('forward', user, text_area))
+        forward.bind('<ButtonRelease-1>', lambda event: self.log_direction('stop', user, text_area))
+
+        left = Button(buttons_panel, text='move left', font=custom_font)
+        left.grid(row=2, column=1, padx=2.5, pady=5)
+        left.bind('<ButtonPress-1>', lambda event: self.log_direction('left', user, text_area))
+        left.bind('<ButtonRelease-1>', lambda event: self.log_direction('stop', user, text_area))
+
+        play = Button(buttons_panel, text='play', font=custom_font, command=self.play_video)
+        play.grid(row=2, column=2, padx=2.5, pady=5)
+
+        stop = Button(buttons_panel, text='stop', font=custom_font, command=self.stop_video)
+        stop.grid(row=2, column=3, padx=2.5, pady=5)
+
+        right = Button(buttons_panel, text='move right', font=custom_font)
+        right.grid(row=2, column=4, padx=2.5, pady=5)
+        right.bind('<ButtonPress-1>', lambda event: self.log_direction('right', user, text_area))
+        right.bind('<ButtonRelease-1>', lambda event: self.log_direction('stop', user, text_area))
+
+        backward = Button(buttons_panel, text='move backward', font=custom_font)
+        backward.grid(row=3, column=2, padx=2.5, pady=5, sticky='we', columnspan=2)
+        backward.bind('<ButtonPress-1>', lambda event: self.log_direction('backward', user, text_area))
+        backward.bind('<ButtonRelease-1>', lambda event: self.log_direction('stop', user, text_area))
+
+        ip_addr = socket.gethostbyname(socket.gethostname())
+        time = datetime.now()
+        timestamp = time.strftime('%Y-%m-%d %H:%M:%S')
+        msg_text = f'{user}@{ip_addr} has logged in at {timestamp}'
+        text_area.config(state='normal')
+        text_area.insert(END, msg_text + '\n')
+        text_area.see(END)
+        text_area.config(state='disabled')
+
+    #updating vid stream
+    def update_vid_stream(self):
+        #frame counter
+        i = 0
+
+        while self.video_running:
+            if not self.cap.isOpened():
+                print('uh oh error')
+                break
+            ret = self.cap.grab() 
+            i += 1
+            # process every 5th frame
+            if i % 5 == 0:  
+                ret, frame = self.cap.retrieve() 
+                if not ret:
+                    break   
+                #resizing frame
+                frame = cv2.resize(frame, (960, 540))
+                #converting to rgb
+                frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                #resizing rbg frame for gui
+                frame_rgb = cv2.resize(frame_rgb, (480, 270))
+
+                # processing bottom frame (w overlay)
+                # final frame
+                final = process(frame)
+                # detecting arrows
+                direction = detect_arrows(frame)
+                #initializing
+                overlay = None
+ 
+                if direction == "right":
+                    print("Keeping right")
+                    self.t = 40  
+                    self.current_overlay = self.right_arrow
+                elif direction == "left":
+                    print("Keeping left")
+                    self.t = 40 
+                    self.current_overlay = self.left_arrow
+                
+                # apply overlay
+                if self.t > 0:
+                    overlay = self.current_overlay
+                    self.t -= 1
+                else:
+                    overlay = self.straight_arrow
+
+                if overlay is not None:
+                    final = transparent(final, overlay)
+
+                #converting to rgb
+                overlay_rgb = cv2.cvtColor(final, cv2.COLOR_BGR2RGB)
+                #resizing
+                overlay_rgb = cv2.resize(overlay_rgb, (480, 270))
+                #og video
+                stream_img = Image.fromarray(frame_rgb) 
+                stream_imgtk = ImageTk.PhotoImage(image=stream_img)
+                overlay_img = Image.fromarray(overlay_rgb)
+                overlay_imgtk = ImageTk.PhotoImage(image=overlay_img)
+                
+                self.stream_elem.config(image=stream_imgtk)
+                self.stream_elem.image = stream_imgtk
+                self.overlay_elem.config(image=overlay_imgtk)
+                self.overlay_elem.image = overlay_imgtk
+
+            self.root.update_idletasks()
+
+        if self.cap is not None:
+            self.cap.release()
+        self.cap = None
+        self.video_running = False
+
+    def log_direction(self, direction, user, gui):
+        ip_addr = socket.gethostbyname(socket.gethostname())
+        time = datetime.now()
+        timestamp = time.strftime('%Y-%m-%d %H:%M:%S')
+        msg = f'{user}@{ip_addr} has sent the command {direction} at {timestamp}\n'
+        gui.config(state='normal')
+        gui.insert(END, msg)
+        gui.see(END)
+        gui.config(state='disabled')
+
+    def play_video(self):
+        if self.cap is None:
+            self.cap = cv2.VideoCapture('photos/actual vid.mp4')
+            if not self.cap.isOpened():
+                print("uh oh error")
+                return
+            self.video_running = True
+            self.video_thread = Thread(target=self.update_vid_stream)
+            self.video_thread.daemon = True
+            self.video_thread.start()
+
+    def stop_video(self):
+        self.video_running = False
+        if self.cap is not None:
+            self.cap.release()
+            self.cap = None
+
+    def open_log_file(self):
+        file_path = 'system_log.txt'
+        if not os.path.exists(file_path):
+            open(file_path, 'w').close()
+        subprocess.call(('open', file_path))
+
+if __name__ == '__main__':
+    root = Tk()
+    app = guiwindows(root)
+    root.mainloop()
